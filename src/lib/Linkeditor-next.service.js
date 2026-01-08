@@ -2,6 +2,7 @@ import { viewMode, currentFile } from "./store.js";
 import { FileServiceNext } from "./File-next.service";
 import { Parser } from "./Parser";
 import { Permission, registerFileAction, addNewFileMenuEntry, DefaultType } from "@nextcloud/files";
+import { loadState } from "@nextcloud/initial-state";
 
 const supportedMimetype = "application/internet-shortcut";
 const getSpanWithIconClass = () => '<span class="icon-link" style="display: block;"></span>';
@@ -123,6 +124,35 @@ export class LinkeditorServiceNext {
 			// TRANSLATORS default filename when creating a new link file from the files list, keep .webloc at the end
 			templateName: window.t("files_linkeditor", "Link.webloc"),
 		});
+
+		// La Suite Docs integration - only show if configured
+		const docsUrl = loadState("files_linkeditor", "docs_url", "");
+		if (docsUrl) {
+			addNewFileMenuEntry({
+				id: "lasuite-new-document",
+				displayName: window.t("files_linkeditor", "New Document (La Suite)"),
+				enabled: (context) => context.permissions >= Permission.CREATE,
+				iconClass: "icon-file",
+				handler: async (context, contents) => {
+					const dir = context.path;
+					
+					// Open La Suite Docs in a new tab - user will create their doc there
+					window.open(docsUrl, "_blank");
+					
+					// Create a placeholder link file pointing to La Suite Docs
+					// User can update the URL after creating their document
+					const fileName = window.t("files_linkeditor", "New Document.URL");
+					const fileContent = Parser.generateURLFileContent("", docsUrl, false, false);
+					
+					await FileServiceNext.save({
+						fileContent,
+						name: fileName,
+						dir,
+						fileModifiedTime: 0, // New file
+					});
+				},
+			});
+		}
 	}
 
 	static async loadAndChangeViewMode({ fileName, dirName, nextViewMode, publicUser, downloadUrl, permissions }) {
