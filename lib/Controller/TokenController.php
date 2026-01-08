@@ -26,9 +26,11 @@ use OCP\AppFramework\Controller;
 use OCP\AppFramework\Http;
 use OCP\AppFramework\Http\JSONResponse;
 use OCP\EventDispatcher\IEventDispatcher;
+use OCP\Files\IRootFolder;
 use OCP\Http\Client\IClientService;
 use OCP\IConfig;
 use OCP\IRequest;
+use OCP\IUserSession;
 use Psr\Log\LoggerInterface;
 
 class TokenController extends Controller {
@@ -45,6 +47,12 @@ class TokenController extends Controller {
 	/** @var IConfig */
 	private $config;
 
+	/** @var IRootFolder */
+	private $rootFolder;
+
+	/** @var IUserSession */
+	private $userSession;
+
 	/**
 	 * @param string $AppName
 	 * @param IRequest $request
@@ -52,6 +60,8 @@ class TokenController extends Controller {
 	 * @param LoggerInterface $logger
 	 * @param IClientService $httpClientService
 	 * @param IConfig $config
+	 * @param IRootFolder $rootFolder
+	 * @param IUserSession $userSession
 	 */
 	public function __construct(
 		$AppName,
@@ -59,13 +69,17 @@ class TokenController extends Controller {
 		IEventDispatcher $eventDispatcher,
 		LoggerInterface $logger,
 		IClientService $httpClientService,
-		IConfig $config
+		IConfig $config,
+		IRootFolder $rootFolder,
+		IUserSession $userSession
 	) {
 		parent::__construct($AppName, $request);
 		$this->eventDispatcher = $eventDispatcher;
 		$this->logger = $logger;
 		$this->httpClientService = $httpClientService;
 		$this->config = $config;
+		$this->rootFolder = $rootFolder;
+		$this->userSession = $userSession;
 	}
 
 	/**
@@ -163,6 +177,150 @@ class TokenController extends Controller {
 			$this->logger->error('Error creating document: ' . $e->getMessage());
 			return new JSONResponse(
 				['error' => 'internal_error', 'message' => 'An unexpected error occurred: ' . $e->getMessage()],
+				Http::STATUS_INTERNAL_SERVER_ERROR
+			);
+		}
+	}
+
+	/**
+	 * Fetch document titles from La Suite Docs for a batch of document IDs.
+	 * Used by the frontend to sync filenames with document titles.
+	 *
+	 * @NoAdminRequired
+	 *
+	 * @param array $documents Array of {id, filePath} objects
+	 * @return JSONResponse
+	 */
+	public function getDocumentTitles(array $documents): JSONResponse {
+		$docsUrl = $this->config->getAppValue('files_linkeditor', 'docs_url', '');
+		if (empty($docsUrl)) {
+			return new JSONResponse(
+				['error' => 'not_configured'],
+				Http::STATUS_SERVICE_UNAVAILABLE
+			);
+		}
+
+		if (!class_exists(\OCA\UserOIDC\Event\ExternalTokenRequestedEvent::class)) {
+			return new JSONResponse(
+				['error' => 'oidc_not_available'],
+				Http::STATUS_SERVICE_UNAVAILABLE
+			);
+		}
+
+		try {
+			// Get OIDC token
+			$event = new \OCA\UserOIDC\Event\ExternalTokenRequestedEvent();
+			$this->eventDispatcher->dispatchTyped($event);
+			$token = $event->getToken();
+
+			if ($token === null) {
+				return new JSONResponse(
+					['error' => 'no_token'],
+					Http::STATUS_UNAUTHORIZED
+				);
+			}
+
+			$accessToken = $token->getAccessToken();
+			$client = $this->httpClientService->newClient();
+			$results = [];
+
+			foreach ($documents as $doc) {
+				if (!isset($doc['id'])) {
+					continue;
+				}
+
+				$docId = $doc['id'];
+				try {
+					$apiUrl = rtrim($docsUrl, '/') . '/api/v1.0/documents/' . $docId . '/';
+					$response = $client->get($apiUrl, [
+						'headers' => [
+							'Authorization' => 'Bearer ' . $accessToken,
+						],
+						'timeout' => 10,
+					]);
+
+					$docData = json_decode($response->getBody(), true);
+					$results[] = [
+						'id' => $docId,
+						'title' => $docData['title'] ?? null,
+						'filePath' => $doc['filePath'] ?? null,
+					];
+				} catch (\Exception $e) {
+					$this->logger->debug('Failed to fetch document ' . $docId . ': ' . $e->getMessage());
+					// Document may have been deleted - include it with null title
+					$results[] = [
+						'id' => $docId,
+						'title' => null,
+						'error' => 'fetch_failed',
+						'filePath' => $doc['filePath'] ?? null,
+					];
+				}
+			}
+
+			return new JSONResponse(['documents' => $results], Http::STATUS_OK);
+
+		} catch (\Exception $e) {
+			$this->logger->error('Error fetching document titles: ' . $e->getMessage());
+			return new JSONResponse(
+				['error' => 'internal_error'],
+				Http::STATUS_INTERNAL_SERVER_ERROR
+			);
+		}
+	}
+
+	/**
+	 * Rename a file in the user's folder.
+	 *
+	 * @NoAdminRequired
+	 *
+	 * @param string $filePath Current file path (relative to user root)
+	 * @param string $newName New filename (just the name, not full path)
+	 * @return JSONResponse
+	 */
+	public function renameFile(string $filePath, string $newName): JSONResponse {
+		try {
+			$user = $this->userSession->getUser();
+			if ($user === null) {
+				return new JSONResponse(
+					['error' => 'not_authenticated'],
+					Http::STATUS_UNAUTHORIZED
+				);
+			}
+
+			$userFolder = $this->rootFolder->getUserFolder($user->getUID());
+			
+			// Get the file
+			$file = $userFolder->get($filePath);
+			
+			// Get parent folder path
+			$parentPath = dirname($filePath);
+			if ($parentPath === '.') {
+				$parentPath = '';
+			}
+			
+			// Build new path
+			$newPath = $parentPath ? $parentPath . '/' . $newName : $newName;
+			
+			// Rename (move) the file
+			$file->move($userFolder->getPath() . '/' . $newPath);
+			
+			$this->logger->info('Renamed file from ' . $filePath . ' to ' . $newPath);
+
+			return new JSONResponse([
+				'success' => true,
+				'oldPath' => $filePath,
+				'newPath' => $newPath,
+			], Http::STATUS_OK);
+
+		} catch (\OCP\Files\NotFoundException $e) {
+			return new JSONResponse(
+				['error' => 'file_not_found', 'message' => 'File not found'],
+				Http::STATUS_NOT_FOUND
+			);
+		} catch (\Exception $e) {
+			$this->logger->error('Error renaming file: ' . $e->getMessage());
+			return new JSONResponse(
+				['error' => 'internal_error', 'message' => $e->getMessage()],
 				Http::STATUS_INTERNAL_SERVER_ERROR
 			);
 		}

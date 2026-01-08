@@ -35,6 +35,16 @@ return [
 			'name' => 'Token#createDocument',
 			'url' => '/api/create-document',
 			'verb' => 'POST'
+		],
+		[
+			'name' => 'Token#getDocumentTitles',
+			'url' => '/api/document-titles',
+			'verb' => 'POST'
+		],
+		[
+			'name' => 'Token#renameFile',
+			'url' => '/api/rename-file',
+			'verb' => 'POST'
 		]
 	]
 ];
