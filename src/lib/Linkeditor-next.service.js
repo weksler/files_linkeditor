@@ -200,7 +200,7 @@ export class LinkeditorServiceNext {
 						
 						// Generate unique filename with timestamp
 						const timestamp = new Date().toISOString().slice(0, 16).replace(/[T:]/g, "-");
-						const fileName = `Document-${timestamp}.URL`;
+						const fileName = `Document-${timestamp}.url`;
 						
 						// Create the link file pointing to the new document
 						// Set skipConfirmation=true so clicking the file opens it directly

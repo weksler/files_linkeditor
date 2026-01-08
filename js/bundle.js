@@ -10038,7 +10038,7 @@ class Sr {
               ), window.open(i, "_blank", "noopener,noreferrer");
               return;
             }
-            const { id: u, url: o } = await c.json(), p = `Document-${(/* @__PURE__ */ new Date()).toISOString().slice(0, 16).replace(/[T:]/g, "-")}.URL`, d = Me.generateURLFileContent("", o, !1, !0);
+            const { id: u, url: o } = await c.json(), p = `Document-${(/* @__PURE__ */ new Date()).toISOString().slice(0, 16).replace(/[T:]/g, "-")}.url`, d = Me.generateURLFileContent("", o, !1, !0);
             Nt.save({ fileContent: d, name: p, dir: h, fileModifiedTime: 0 }), it.update(() => "view"), setTimeout(() => {
               At.update(
                 () => Nt.getFileConfig({
