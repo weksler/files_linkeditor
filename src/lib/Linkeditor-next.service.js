@@ -45,8 +45,44 @@ export class LinkeditorServiceNext {
 			displayName: () => t("files_linkeditor", "View link"),
 			iconSvgInline: getSpanWithIconClass,
 			exec: async (file) => {
+				const docsHost = import.meta.env.VITE_DOCS_HOST;
+				
 				if (window.OC.currentUser) {
-					// Logged in
+					// For La Suite docs, open window FIRST (synchronously) to avoid popup blocker
+					// Then load the file and update the window location
+					if (docsHost) {
+						// Open window immediately with about:blank - this is synchronous and won't be blocked
+						// Note: can't use noopener because we need to set location.href later
+						const newWindow = window.open("about:blank", "_blank");
+						
+						// Now load the file asynchronously
+						const loadedFile = await FileServiceNext.load({ 
+							fileName: file.basename, 
+							dir: file.dirname 
+						});
+						
+						if (loadedFile) {
+							const extension = Parser.getExtension(file.basename);
+							const parsedFile = extension === "webloc" 
+								? Parser.parseWeblocFile(loadedFile.filecontents)
+								: Parser.parseURLFile(loadedFile.filecontents);
+							
+							// If it's a La Suite docs URL, navigate the already-opened window
+							if (parsedFile.url && parsedFile.url.includes(docsHost)) {
+								if (newWindow) {
+									newWindow.location.href = parsedFile.url;
+								}
+								return;
+							}
+						}
+						
+						// Not a La Suite doc - close the blank window and show normal viewer
+						if (newWindow) {
+							newWindow.close();
+						}
+					}
+					
+					// Not a La Suite doc, use normal flow with viewer
 					await LinkeditorServiceNext.loadAndChangeViewMode({
 						fileName: file.basename,
 						dirName: file.dirname,
@@ -167,7 +203,8 @@ export class LinkeditorServiceNext {
 						const fileName = `Document-${timestamp}.URL`;
 						
 						// Create the link file pointing to the new document
-						const fileContent = Parser.generateURLFileContent("", docUrl, false, false);
+						// Set skipConfirmation=true so clicking the file opens it directly
+						const fileContent = Parser.generateURLFileContent("", docUrl, false, true);
 						FileServiceNext.save({ fileContent, name: fileName, dir, fileModifiedTime: 0 });
 						
 						// Use the app's viewer to navigate (with skipConfirmation + new window)
@@ -227,6 +264,14 @@ export class LinkeditorServiceNext {
 			} else {
 				parsedFile = Parser.parseURLFile(file.filecontents);
 			}
+			
+			// Auto-skip confirmation for La Suite docs URLs (open in new window)
+			const docsHost = import.meta.env.VITE_DOCS_HOST;
+			if (docsHost && parsedFile.url && parsedFile.url.includes(docsHost)) {
+				parsedFile.skipConfirmation = true;
+				parsedFile.sameWindow = false;
+			}
+			
 			// Update file info in store
 			currentFile.update((fileConfig) =>
 				FileServiceNext.getFileConfig({

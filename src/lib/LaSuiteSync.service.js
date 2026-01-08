@@ -14,15 +14,10 @@ const DOCS_URL_PATTERN = DOCS_HOST ? new RegExp(`https://${DOCS_HOST.replace(/\.
  * Uses breadcrumb click which triggers Vue data refresh without page reload
  */
 function refreshFileList() {
-	console.log('[LaSuiteSync] Refreshing file list...');
-	
 	// Method 1: Click the current folder in breadcrumb (triggers Vue data refresh)
-	// The current folder is always the LAST breadcrumb item
 	const breadcrumbSelectors = [
-		// NC 28+ Vue-based file list
 		'.files-list__header-breadcrumbs .vue-crumb:last-of-type a',
 		'.breadcrumb__crumbs .vue-crumb:last-of-type a', 
-		// Alternative selectors
 		'[data-cy-files-content-breadcrumbs] a:last-of-type',
 		'.breadcrumb .crumb:last-of-type a',
 	];
@@ -30,7 +25,6 @@ function refreshFileList() {
 	for (const selector of breadcrumbSelectors) {
 		const crumb = document.querySelector(selector);
 		if (crumb) {
-			console.log('[LaSuiteSync] Clicking breadcrumb:', selector);
 			crumb.click();
 			return;
 		}
@@ -38,14 +32,11 @@ function refreshFileList() {
 	
 	// Method 2: Try OCA.Files.App.fileList.reload() (older Nextcloud)
 	if (window.OCA?.Files?.App?.fileList?.reload) {
-		console.log('[LaSuiteSync] Using fileList.reload()');
 		window.OCA.Files.App.fileList.reload();
 		return;
 	}
 	
-	// Method 3: Trigger a soft refresh by re-navigating to current URL
-	// This uses Vue Router's popstate handling
-	console.log('[LaSuiteSync] Dispatching popstate');
+	// Method 3: Trigger a soft refresh via popstate
 	window.dispatchEvent(new PopStateEvent('popstate', { state: window.history.state }));
 }
 
@@ -134,16 +125,8 @@ async function getCurrentFolderFiles() {
 	const userId = getCurrentUserId();
 	
 	if (!userId) {
-		console.debug('[LaSuiteSync] User not available, trying alternatives...');
-		// Try to extract from page
-		const userEl = document.getElementById('user');
-		if (userEl) {
-			console.debug('[LaSuiteSync] Found user element:', userEl);
-		}
 		return [];
 	}
-	
-	console.debug(`[LaSuiteSync] User ID: ${userId}, Dir: ${currentDir}`);
 
 	try {
 		// Use WebDAV PROPFIND to list files
@@ -197,7 +180,6 @@ async function getCurrentFolderFiles() {
 			}
 		});
 		
-		console.debug(`[LaSuiteSync] Found ${files.length} link files in ${currentDir}`);
 		return files;
 		
 	} catch (e) {
@@ -402,8 +384,6 @@ async function syncAllImmediately() {
 
 		if (documentsToSync.length === 0) return;
 
-		console.log(`[LaSuiteSync] Immediate sync of ${documentsToSync.length} documents`);
-
 		// Fetch titles from backend
 		const response = await fetch(
 			window.OC.generateUrl('/apps/files_linkeditor/api/document-titles'),
@@ -494,12 +474,6 @@ export function startSync() {
 		return; // Already running
 	}
 
-	// Debug: log available user info
-	console.log('[LaSuiteSync] Starting document title sync');
-	console.log('[LaSuiteSync] OC.currentUser:', window.OC?.currentUser);
-	console.log('[LaSuiteSync] _oc_current_user:', window._oc_current_user);
-	console.log('[LaSuiteSync] data-user:', document.head.querySelector('[data-user]')?.dataset?.user);
-	
 	// Run sync every 5 seconds (the actual per-file intervals are managed internally)
 	syncTimerId = setInterval(syncDocumentTitles, 5000);
 	
@@ -518,7 +492,6 @@ export function startSync() {
 		if (currentDir !== lastDir || currentUrl !== lastUrl) {
 			lastDir = currentDir;
 			lastUrl = currentUrl;
-			console.log(`[LaSuiteSync] Folder changed to: ${currentDir}`);
 			// Small delay to let the file list populate
 			setTimeout(syncAllImmediately, 500);
 		}
@@ -529,7 +502,6 @@ export function startSync() {
 	
 	// Also listen for popstate (back/forward navigation)
 	window.addEventListener('popstate', () => {
-		console.log('[LaSuiteSync] Navigation detected');
 		setTimeout(syncAllImmediately, 500);
 	});
 }
@@ -541,7 +513,6 @@ export function stopSync() {
 	if (syncTimerId) {
 		clearInterval(syncTimerId);
 		syncTimerId = null;
-		console.log('[LaSuiteSync] Stopped document title sync');
 	}
 }
 
