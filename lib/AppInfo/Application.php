@@ -10,8 +10,8 @@ use OCP\AppFramework\Bootstrap\IBootContext;
 use OCP\AppFramework\Bootstrap\IRegistrationContext;
 use OCP\EventDispatcher\Event;
 use OCP\EventDispatcher\IEventListener;
+use OCP\AppFramework\Services\IInitialState;
 use OCP\IConfig;
-use OCP\IInitialState;
 use OCP\Util;
 
 class Application extends App implements IBootstrap {
