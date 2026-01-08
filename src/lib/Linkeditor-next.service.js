@@ -127,37 +127,72 @@ export class LinkeditorServiceNext {
 		// La Suite Docs integration - only show if DOCS_HOST was provided at build time
 		const docsHost = import.meta.env.VITE_DOCS_HOST;
 		if (docsHost) {
-			const docsUrl = `https://${docsHost}`;
+			const docsBaseUrl = `https://${docsHost}`;
 			addNewFileMenuEntry({
 				id: "lasuite-new-document",
 				displayName: window.t("files_linkeditor", "New Document"),
 				enabled: (context) => context.permissions >= Permission.CREATE,
 				iconClass: "icon-file",
-				handler: (context, contents) => {
+				handler: async (context, contents) => {
 					const dir = context.path;
 					
-					// Generate unique filename with timestamp
-					const timestamp = new Date().toISOString().slice(0, 16).replace(/[T:]/g, "-");
-					const fileName = `Document-${timestamp}.URL`;
-					
-					// Create the link file in background
-					const fileContent = Parser.generateURLFileContent("", docsUrl, false, false);
-					FileServiceNext.save({ fileContent, name: fileName, dir, fileModifiedTime: 0 });
-					
-					// Trigger viewer first, then update file after component mounts
-					viewMode.update(() => "view");
-					setTimeout(() => {
-						currentFile.update(() =>
-							FileServiceNext.getFileConfig({
-								name: fileName,
-								url: docsUrl,
-								dir,
-								isLoaded: true,
-								sameWindow: false,
-								skipConfirmation: true,
-							}),
+					try {
+						// Create document via our PHP backend (avoids CSP issues)
+						const response = await fetch(
+							window.OC.generateUrl("/apps/files_linkeditor/api/create-document"),
+							{
+								method: "POST",
+								headers: {
+									"requesttoken": window.OC.requestToken,
+									"Content-Type": "application/json",
+								},
+							}
 						);
-					}, 50);
+						
+						if (!response.ok) {
+							const error = await response.json();
+							console.error("[LaSuite] Failed to create document:", error);
+							window.OC.Notification.showTemporary(
+								error.message || window.t("files_linkeditor", "Failed to create document.")
+							);
+							// Fallback: open docs homepage
+							window.open(docsBaseUrl, "_blank", "noopener,noreferrer");
+							return;
+						}
+						
+						const { id, url: docUrl } = await response.json();
+						
+						// Generate unique filename with timestamp
+						const timestamp = new Date().toISOString().slice(0, 16).replace(/[T:]/g, "-");
+						const fileName = `Document-${timestamp}.URL`;
+						
+						// Create the link file pointing to the new document
+						const fileContent = Parser.generateURLFileContent("", docUrl, false, false);
+						FileServiceNext.save({ fileContent, name: fileName, dir, fileModifiedTime: 0 });
+						
+						// Use the app's viewer to navigate (with skipConfirmation + new window)
+						viewMode.update(() => "view");
+						setTimeout(() => {
+							currentFile.update(() =>
+								FileServiceNext.getFileConfig({
+									name: fileName,
+									url: docUrl,
+									dir,
+									isLoaded: true,
+									sameWindow: false,
+									skipConfirmation: true,
+								}),
+							);
+						}, 50);
+						
+					} catch (error) {
+						console.error("[LaSuite] Error creating document:", error);
+						window.OC.Notification.showTemporary(
+							window.t("files_linkeditor", "An error occurred while creating the document.")
+						);
+						// Fallback: open docs homepage
+						window.open(docsBaseUrl, "_blank", "noopener,noreferrer");
+					}
 				},
 			});
 		}

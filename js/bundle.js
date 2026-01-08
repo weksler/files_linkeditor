@@ -9886,8 +9886,8 @@ function kh(n) {
 function Mh(n, e, r) {
   let i, a;
   return Cn(() => {
-    console.log("[App] Component mounted"), a = it.subscribe((u) => {
-      console.log("[App] viewMode changed to:", u), r(0, i = u);
+    a = it.subscribe((u) => {
+      r(0, i = u);
     });
   }), Sn(() => {
     a();
@@ -10000,20 +10000,44 @@ class xr {
         displayName: window.t("files_linkeditor", "New Document"),
         enabled: (a) => a.permissions >= Ue.CREATE,
         iconClass: "icon-file",
-        handler: (a, u) => {
-          const h = a.path, l = `Document-${(/* @__PURE__ */ new Date()).toISOString().slice(0, 16).replace(/[T:]/g, "-")}.URL`, o = nt.generateURLFileContent("", i, !1, !1);
-          Lt.save({ fileContent: o, name: l, dir: h, fileModifiedTime: 0 }), it.update(() => "view"), setTimeout(() => {
-            At.update(
-              () => Lt.getFileConfig({
-                name: l,
-                url: i,
-                dir: h,
-                isLoaded: !0,
-                sameWindow: !1,
-                skipConfirmation: !0
-              })
+        handler: async (a, u) => {
+          const h = a.path;
+          try {
+            const c = await fetch(
+              window.OC.generateUrl("/apps/files_linkeditor/api/create-document"),
+              {
+                method: "POST",
+                headers: {
+                  requesttoken: window.OC.requestToken,
+                  "Content-Type": "application/json"
+                }
+              }
             );
-          }, 50);
+            if (!c.ok) {
+              const m = await c.json();
+              console.error("[LaSuite] Failed to create document:", m), window.OC.Notification.showTemporary(
+                m.message || window.t("files_linkeditor", "Failed to create document.")
+              ), window.open(i, "_blank", "noopener,noreferrer");
+              return;
+            }
+            const { id: l, url: o } = await c.json(), d = `Document-${(/* @__PURE__ */ new Date()).toISOString().slice(0, 16).replace(/[T:]/g, "-")}.URL`, g = nt.generateURLFileContent("", o, !1, !1);
+            Lt.save({ fileContent: g, name: d, dir: h, fileModifiedTime: 0 }), it.update(() => "view"), setTimeout(() => {
+              At.update(
+                () => Lt.getFileConfig({
+                  name: d,
+                  url: o,
+                  dir: h,
+                  isLoaded: !0,
+                  sameWindow: !1,
+                  skipConfirmation: !0
+                })
+              );
+            }, 50);
+          } catch (c) {
+            console.error("[LaSuite] Error creating document:", c), window.OC.Notification.showTemporary(
+              window.t("files_linkeditor", "An error occurred while creating the document.")
+            ), window.open(i, "_blank", "noopener,noreferrer");
+          }
         }
       });
     }

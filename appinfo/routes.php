@@ -30,6 +30,11 @@ return [
 			'name' => 'LinkHandling#save',
 			'url' => '/ajax/savefile',
 			'verb' => 'PUT'
+		],
+		[
+			'name' => 'Token#createDocument',
+			'url' => '/api/create-document',
+			'verb' => 'POST'
 		]
 	]
 ];
