@@ -2,7 +2,6 @@ import { viewMode, currentFile } from "./store.js";
 import { FileServiceNext } from "./File-next.service";
 import { Parser } from "./Parser";
 import { Permission, registerFileAction, addNewFileMenuEntry, DefaultType } from "@nextcloud/files";
-import { loadState } from "@nextcloud/initial-state";
 
 const supportedMimetype = "application/internet-shortcut";
 const getSpanWithIconClass = () => '<span class="icon-link" style="display: block;"></span>';
@@ -125,31 +124,40 @@ export class LinkeditorServiceNext {
 			templateName: window.t("files_linkeditor", "Link.webloc"),
 		});
 
-		// La Suite Docs integration - only show if configured
-		const docsUrl = loadState("files_linkeditor", "docs_url", "");
-		if (docsUrl) {
+		// La Suite Docs integration - only show if DOCS_HOST was provided at build time
+		const docsHost = import.meta.env.VITE_DOCS_HOST;
+		if (docsHost) {
+			const docsUrl = `https://${docsHost}`;
 			addNewFileMenuEntry({
 				id: "lasuite-new-document",
-				displayName: window.t("files_linkeditor", "New Document (La Suite)"),
+				displayName: window.t("files_linkeditor", "New Document"),
 				enabled: (context) => context.permissions >= Permission.CREATE,
 				iconClass: "icon-file",
-				handler: async (context, contents) => {
+				handler: (context, contents) => {
 					const dir = context.path;
 					
-					// Open La Suite Docs in a new tab - user will create their doc there
-					window.open(docsUrl, "_blank");
+					// Generate unique filename with timestamp
+					const timestamp = new Date().toISOString().slice(0, 16).replace(/[T:]/g, "-");
+					const fileName = `Document-${timestamp}.URL`;
 					
-					// Create a placeholder link file pointing to La Suite Docs
-					// User can update the URL after creating their document
-					const fileName = window.t("files_linkeditor", "New Document.URL");
+					// Create the link file in background
 					const fileContent = Parser.generateURLFileContent("", docsUrl, false, false);
+					FileServiceNext.save({ fileContent, name: fileName, dir, fileModifiedTime: 0 });
 					
-					await FileServiceNext.save({
-						fileContent,
-						name: fileName,
-						dir,
-						fileModifiedTime: 0, // New file
-					});
+					// Trigger viewer first, then update file after component mounts
+					viewMode.update(() => "view");
+					setTimeout(() => {
+						currentFile.update(() =>
+							FileServiceNext.getFileConfig({
+								name: fileName,
+								url: docsUrl,
+								dir,
+								isLoaded: true,
+								sameWindow: false,
+								skipConfirmation: true,
+							}),
+						);
+					}, 50);
 				},
 			});
 		}

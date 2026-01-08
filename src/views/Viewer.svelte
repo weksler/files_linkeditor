@@ -28,8 +28,12 @@
 				// Don't do this for public shares to keep behaviour
 				// mostly consistent with < NC 31 public files app
 				const isPublicAndFileFocussed = file.isPublicLink && window.location.toString().includes("openfile=true");
-				if (file.skipConfirmation && file.sameWindow && !isPublicAndFileFocussed) {
-					window.location.href = file.url;
+				if (file.skipConfirmation && !isPublicAndFileFocussed) {
+					if (file.sameWindow) {
+						window.location.href = file.url;
+					} else {
+						window.open(file.url, "_blank");
+					}
 					// Hide viewer
 					viewMode.update(() => "none");
 				}
