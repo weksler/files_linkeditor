@@ -418,6 +418,125 @@ X-Target=_self`),
 		});
 	});
 
+	describe(".mtd files (MotherTree Documents)", function () {
+		it("creates a .mtd file with just a URL", function () {
+			const url = "https://example.org";
+			expect(Parser.generateMTDFileContent("", url)).toEqual(`[MotherTree]\r
+URL=${url}\r
+`);
+		});
+
+		it("creates a .mtd file with a URL and the sameWindow option", function () {
+			const url = "https://example.org";
+			const sameWindow = true;
+			expect(Parser.generateMTDFileContent("", url, sameWindow)).toEqual(`[MotherTree]\r
+URL=${url}\r
+X-Target=_self\r
+`);
+		});
+
+		it("creates a .mtd file with a URL, the sameWindow option and the skipConfirmation option", function () {
+			const url = "https://example.org";
+			const sameWindow = true;
+			const skipConfirmation = true;
+			expect(Parser.generateMTDFileContent("", url, sameWindow, skipConfirmation)).toEqual(`[MotherTree]\r
+URL=${url}\r
+X-Target=_self\r
+X-Skip-Confirm-Navigation=1\r
+`);
+		});
+
+		it("updates a .mtd file removing the sameWindow option and keeping the skipConfirmation option", function () {
+			const url = "https://example.org";
+			const previousFile = `[MotherTree]\r
+URL=${url}\r
+X-Target=_self\r
+X-Skip-Confirm-Navigation=1\r
+`;
+			const sameWindow = false;
+			const skipConfirmation = true;
+			expect(Parser.generateMTDFileContent(previousFile, url, sameWindow, skipConfirmation))
+				.toEqual(`[MotherTree]\r
+URL=${url}\r
+X-Skip-Confirm-Navigation=1\r
+`);
+		});
+
+		it("migrates a .url format file to .mtd format when updating", function () {
+			const url = "https://example.org";
+			const previousFile = `[InternetShortcut]\r
+URL=${url}\r
+`;
+			expect(Parser.generateMTDFileContent(previousFile, url)).toEqual(`[MotherTree]\r
+URL=${url}\r
+`);
+		});
+
+		it("reads a .mtd file with [MotherTree] header", function () {
+			const file = {
+				url: "https://example.org",
+				sameWindow: false,
+				skipConfirmation: false,
+			};
+			expect(
+				Parser.parseMTDFile(`[MotherTree]
+URL=${file.url}`),
+			).toEqual(file);
+		});
+
+		it("reads a .mtd file with [InternetShortcut] header (backward compatibility)", function () {
+			const file = {
+				url: "https://example.org",
+				sameWindow: false,
+				skipConfirmation: false,
+			};
+			expect(
+				Parser.parseMTDFile(`[InternetShortcut]
+URL=${file.url}`),
+			).toEqual(file);
+		});
+
+		it("reads a .mtd file with a link and a sameWindow field", function () {
+			const file = {
+				url: "https://example.org",
+				sameWindow: true,
+				skipConfirmation: false,
+			};
+			expect(
+				Parser.parseMTDFile(`[MotherTree]
+URL=${file.url}
+X-Target=_self`),
+			).toEqual(file);
+		});
+
+		it("reads a .mtd file with a link, a sameWindow field and a skipConfirmation field", function () {
+			const file = {
+				url: "https://example.org",
+				sameWindow: true,
+				skipConfirmation: true,
+			};
+			expect(
+				Parser.parseMTDFile(`[MotherTree]
+URL=${file.url}
+X-Skip-Confirm-Navigation=1
+X-Target=_self`),
+			).toEqual(file);
+		});
+
+		it("reads a .mtd file with a link and a skipConfirmation field", function () {
+			const file = {
+				url: "https://example.org",
+				sameWindow: false,
+				skipConfirmation: true,
+			};
+			expect(
+				Parser.parseMTDFile(`[MotherTree]
+URL=${file.url}
+X-Skip-Confirm-Navigation=1`),
+			).toEqual(file);
+		});
+	});
+
 	describe("Helpers", function () {
 		it("can fix a missing .webloc extension", () => {
 			expect(checkAndFixExtension({ templateName: "File.webloc", name: "File" })).toStrictEqual({
@@ -430,6 +549,13 @@ X-Target=_self`),
 			expect(checkAndFixExtension({ templateName: "File.URL", name: "File" })).toStrictEqual({
 				templateName: "File.URL",
 				name: "File.URL",
+			});
+		});
+
+		it("can fix a missing .mtd extension", () => {
+			expect(checkAndFixExtension({ templateName: "Document.mtd", name: "Document" })).toStrictEqual({
+				templateName: "Document.mtd",
+				name: "Document.mtd",
 			});
 		});
 

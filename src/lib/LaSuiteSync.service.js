@@ -77,7 +77,8 @@ function extractDocId(url) {
 }
 
 /**
- * Parse a .URL file content to extract the URL
+ * Parse a .URL or .mtd file content to extract the URL
+ * Supports both [InternetShortcut] and [MotherTree] sections
  */
 function parseUrlFileContent(content) {
 	const match = content.match(/URL=(.+)/i);
@@ -183,9 +184,9 @@ async function getCurrentFolderFiles() {
 			const displayname = resp.querySelector('displayname')?.textContent || '';
 			const lastmodified = resp.querySelector('getlastmodified')?.textContent || '';
 			
-			// Check if it's a .URL or .webloc file
+			// Check if it's a .URL, .webloc, or .mtd file
 			const name = displayname || decodeURIComponent(href.split('/').pop());
-			if (name.toLowerCase().endsWith('.url') || name.toLowerCase().endsWith('.webloc')) {
+			if (name.toLowerCase().endsWith('.url') || name.toLowerCase().endsWith('.webloc') || name.toLowerCase().endsWith('.mtd')) {
 				files.push({
 					name: name,
 					path: currentDir === '/' ? `/${name}` : `${currentDir}/${name}`,
@@ -306,13 +307,12 @@ async function syncDocumentTitles() {
 			const originalFile = documentsToSync.find(d => d.id === doc.id);
 			if (!originalFile) continue;
 
-			// Build expected filename from title
-			const extension = originalFile.fileName.substring(originalFile.fileName.lastIndexOf('.'));
-			const expectedName = sanitizeFilename(doc.title) + extension;
+			// Build expected filename from title - always use .mtd extension (migrates .url files)
+			const expectedName = sanitizeFilename(doc.title) + '.mtd';
 			const dir = originalFile.filePath.substring(0, originalFile.filePath.lastIndexOf('/')) || '/';
 			const newPath = dir === '/' ? `/${expectedName}` : `${dir}/${expectedName}`;
 
-			// Check if rename is needed
+			// Check if rename is needed (includes extension change from .url/.webloc to .mtd)
 			if (originalFile.fileName !== expectedName) {
 				console.log(`[LaSuiteSync] Renaming: ${originalFile.fileName} -> ${expectedName}`);
 				
@@ -426,13 +426,12 @@ async function syncAllImmediately() {
 			const originalFile = documentsToSync.find(d => d.id === doc.id);
 			if (!originalFile) continue;
 
-			// Build expected filename from title
-			const extension = originalFile.fileName.substring(originalFile.fileName.lastIndexOf('.'));
-			const expectedName = sanitizeFilename(doc.title) + extension;
+			// Build expected filename from title - always use .mtd extension (migrates .url files)
+			const expectedName = sanitizeFilename(doc.title) + '.mtd';
 			const dir = originalFile.filePath.substring(0, originalFile.filePath.lastIndexOf('/')) || '/';
 			const newPath = dir === '/' ? `/${expectedName}` : `${dir}/${expectedName}`;
 
-			// Check if rename is needed
+			// Check if rename is needed (includes extension change from .url/.webloc to .mtd)
 			if (originalFile.fileName !== expectedName) {
 				console.log(`[LaSuiteSync] Renaming: ${originalFile.fileName} -> ${expectedName}`);
 				

@@ -80,6 +80,76 @@ export class Parser {
 	}
 
 	/**
+	 * Generates a MotherTree Document (.mtd) file.
+	 * Similar to URL file format but with [MotherTree] header.
+	 */
+	static generateMTDFileContent(oldContent, url, sameWindow = false, skipConfirmation = false) {
+		let newContent = "";
+		// Find if this is already an MTD file (check for both headers for backward compatibility)
+		const isExistingMTD = oldContent && (oldContent.indexOf("[MotherTree]") !== -1 || oldContent.indexOf("[InternetShortcut]") !== -1) && oldContent.indexOf("URL=") !== -1;
+		
+		if (isExistingMTD) {
+			// Replace the URL in existing content
+			newContent = oldContent.replace(new RegExp("URL=.*", "gm"), `URL=${sanitizeUrl(url)}`);
+			// Ensure we use [MotherTree] header (migrate from [InternetShortcut] if needed)
+			newContent = newContent.replace("[InternetShortcut]", "[MotherTree]");
+		} else {
+			// Create a new file with [MotherTree] header
+			newContent = `[MotherTree]\r\nURL=${sanitizeUrl(url)}`;
+		}
+		
+		// Adjust same window property
+		if (!sameWindow && newContent.indexOf(extraFields.sameWindow) !== -1) {
+			newContent = newContent.replace(extraFields.sameWindow, "");
+		} else if (sameWindow && newContent.indexOf(extraFields.sameWindow) === -1) {
+			newContent = `${newContent}\r\n${extraFields.sameWindow}`;
+		}
+
+		// Adjust skip navigation confirmation property
+		if (!skipConfirmation && newContent.indexOf(extraFields.skipConfirmation) !== -1) {
+			newContent = newContent.replace(extraFields.skipConfirmation, "");
+		} else if (skipConfirmation && newContent.indexOf(extraFields.skipConfirmation) === -1) {
+			newContent = `${newContent}\r\n${extraFields.skipConfirmation}`;
+		}
+
+		// Remove blank new lines
+		newContent = newContent.replace(/\r\n\r\n/gm, "\r\n").trim();
+		// Add a newline at the end
+		return `${newContent}\r\n`;
+	}
+
+	/**
+	 * Parse a MotherTree Document (.mtd) file.
+	 * Supports both [MotherTree] and [InternetShortcut] headers for backward compatibility.
+	 */
+	static parseMTDFile(filecontent) {
+		const result = { ...emptyFile };
+
+		if (filecontent) {
+			// Match for URL line (works with both [MotherTree] and [InternetShortcut] sections)
+			const urllines = filecontent.match("URL=.*");
+			// See if matches were found.
+			if (urllines && Array.isArray(urllines) && urllines.length > 0) {
+				// Let's use the first match.
+				const url = urllines[0];
+				// Return only the URL.
+				result.url = sanitizeUrl(url.replace("URL=", ""));
+			}
+
+			// If this extra field is present, we skip the navigation confirmation view
+			if (filecontent.indexOf(extraFields.skipConfirmation) !== -1) {
+				result.skipConfirmation = true;
+			}
+			// If this extra field is present, the link opens in the same window
+			if (filecontent.indexOf(extraFields.sameWindow) !== -1) {
+				result.sameWindow = true;
+			}
+		}
+
+		return result;
+	}
+
+	/**
 	 * Generates a webloc file.
 	 */
 	static generateWeblocFileContent(oldcontent, url, sameWindow = false, skipConfirmation = false) {

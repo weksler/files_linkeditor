@@ -3,8 +3,12 @@ import { FileServiceNext } from "./File-next.service";
 import { Parser } from "./Parser";
 import { Permission, registerFileAction, addNewFileMenuEntry, DefaultType } from "@nextcloud/files";
 
-const supportedMimetype = "application/internet-shortcut";
+// Supported MIME types - includes both legacy .url/.webloc and new .mtd format
+const supportedMimetypes = ["application/internet-shortcut", "application/x-mothertree-document"];
 const getSpanWithIconClass = () => '<span class="icon-link" style="display: block;"></span>';
+
+// Helper to check if a file has a supported mimetype
+const isSupportedMimetype = (mime) => supportedMimetypes.some(m => mime === m || mime?.includes(m));
 
 /**
  * Detect the docs host dynamically based on the current hostname.
@@ -48,10 +52,10 @@ export class LinkeditorServiceNext {
 					permissions: file.permissions,
 				});
 			},
-			enabled: (files) =>
-				window.OC.currentUser &&
-				files.every((file) => file.permissions >= Permission.UPDATE && supportedMimetype.includes(file.mime)),
-		});
+		enabled: (files) =>
+			window.OC.currentUser &&
+			files.every((file) => file.permissions >= Permission.UPDATE && isSupportedMimetype(file.mime)),
+	});
 
 		// View action on single file
 		registerFileAction({
@@ -75,20 +79,25 @@ export class LinkeditorServiceNext {
 							dir: file.dirname 
 						});
 						
-						if (loadedFile) {
-							const extension = Parser.getExtension(file.basename);
-							const parsedFile = extension === "webloc" 
-								? Parser.parseWeblocFile(loadedFile.filecontents)
-								: Parser.parseURLFile(loadedFile.filecontents);
-							
-							// If it's a La Suite docs URL, navigate the already-opened window
-							if (parsedFile.url && parsedFile.url.includes(docsHost)) {
-								if (newWindow) {
-									newWindow.location.href = parsedFile.url;
-								}
-								return;
-							}
+					if (loadedFile) {
+						const extension = Parser.getExtension(file.basename);
+						let parsedFile;
+						if (extension === "webloc") {
+							parsedFile = Parser.parseWeblocFile(loadedFile.filecontents);
+						} else if (extension === "mtd") {
+							parsedFile = Parser.parseMTDFile(loadedFile.filecontents);
+						} else {
+							parsedFile = Parser.parseURLFile(loadedFile.filecontents);
 						}
+						
+						// If it's a La Suite docs URL, navigate the already-opened window
+						if (parsedFile.url && parsedFile.url.includes(docsHost)) {
+							if (newWindow) {
+								newWindow.location.href = parsedFile.url;
+							}
+							return;
+						}
+					}
 						
 						// Not a La Suite doc - close the blank window and show normal viewer
 						if (newWindow) {
@@ -118,10 +127,10 @@ export class LinkeditorServiceNext {
 					});
 				}
 			},
-			enabled: (files) =>
-				files.every((file) => file.permissions >= Permission.READ && supportedMimetype.includes(file.mime)),
-			default: () => DefaultType.DEFAULT,
-		});
+		enabled: (files) =>
+			files.every((file) => file.permissions >= Permission.READ && isSupportedMimetype(file.mime)),
+		default: () => DefaultType.DEFAULT,
+	});
 
 		const menuEntryFactory = ({ id, displayName, templateName }) => {
 			// Register the new menu entry
@@ -210,16 +219,16 @@ export class LinkeditorServiceNext {
 							return;
 						}
 						
-						const { id, url: docUrl } = await response.json();
-						
-						// Generate unique filename with timestamp
-						const timestamp = new Date().toISOString().slice(0, 16).replace(/[T:]/g, "-");
-						const fileName = `Document-${timestamp}.url`;
-						
-						// Create the link file pointing to the new document
-						// Set skipConfirmation=true so clicking the file opens it directly
-						const fileContent = Parser.generateURLFileContent("", docUrl, false, true);
-						FileServiceNext.save({ fileContent, name: fileName, dir, fileModifiedTime: 0 });
+					const { id, url: docUrl } = await response.json();
+					
+					// Generate unique filename with timestamp - use .mtd extension for MotherTree Documents
+					const timestamp = new Date().toISOString().slice(0, 16).replace(/[T:]/g, "-");
+					const fileName = `Document-${timestamp}.mtd`;
+					
+					// Create the link file pointing to the new document
+					// Set skipConfirmation=true so clicking the file opens it directly
+					const fileContent = Parser.generateMTDFileContent("", docUrl, false, true);
+					FileServiceNext.save({ fileContent, name: fileName, dir, fileModifiedTime: 0 });
 						
 						// Use the app's viewer to navigate (with skipConfirmation + new window)
 						viewMode.update(() => "view");
@@ -268,23 +277,25 @@ export class LinkeditorServiceNext {
 		} else {
 			file = await FileServiceNext.load({ fileName, dir: dirName });
 		}
-		if (file) {
-			// Read extension and run fitting parser.
-			const extension = Parser.getExtension(fileName);
-			// Parse the filecontent to get to the URL.
-			let parsedFile = {};
-			if (extension === "webloc") {
-				parsedFile = Parser.parseWeblocFile(file.filecontents);
-			} else {
-				parsedFile = Parser.parseURLFile(file.filecontents);
-			}
-			
-			// Auto-skip confirmation for La Suite docs URLs (open in new window)
-			const docsHost = getDocsHost();
-			if (docsHost && parsedFile.url && parsedFile.url.includes(docsHost)) {
-				parsedFile.skipConfirmation = true;
-				parsedFile.sameWindow = false;
-			}
+	if (file) {
+		// Read extension and run fitting parser.
+		const extension = Parser.getExtension(fileName);
+		// Parse the filecontent to get to the URL.
+		let parsedFile = {};
+		if (extension === "webloc") {
+			parsedFile = Parser.parseWeblocFile(file.filecontents);
+		} else if (extension === "mtd") {
+			parsedFile = Parser.parseMTDFile(file.filecontents);
+		} else {
+			parsedFile = Parser.parseURLFile(file.filecontents);
+		}
+		
+		// Auto-skip confirmation for La Suite docs URLs (open in new window)
+		const docsHost = getDocsHost();
+		if (docsHost && parsedFile.url && parsedFile.url.includes(docsHost)) {
+			parsedFile.skipConfirmation = true;
+			parsedFile.sameWindow = false;
+		}
 			
 			// Update file info in store
 			currentFile.update((fileConfig) =>
@@ -301,12 +312,14 @@ export class LinkeditorServiceNext {
 	}
 
 	static async saveAndChangeViewMode({ name, dir, url, fileModifiedTime, sameWindow, skipConfirmation }) {
-		// Read extension and run fitting parser.
+		// Read extension and run fitting generator.
 		const extension = Parser.getExtension(name);
-		// Parse the filecontent to get to the URL.
+		// Generate the file content based on extension.
 		let fileContent = "";
 		if (extension === "webloc") {
 			fileContent = Parser.generateWeblocFileContent("", url, sameWindow, skipConfirmation);
+		} else if (extension === "mtd") {
+			fileContent = Parser.generateMTDFileContent("", url, sameWindow, skipConfirmation);
 		} else {
 			fileContent = Parser.generateURLFileContent("", url, sameWindow, skipConfirmation);
 		}
