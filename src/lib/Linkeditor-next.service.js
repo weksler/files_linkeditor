@@ -6,6 +6,20 @@ import { Permission, registerFileAction, addNewFileMenuEntry, DefaultType } from
 const supportedMimetype = "application/internet-shortcut";
 const getSpanWithIconClass = () => '<span class="icon-link" style="display: block;"></span>';
 
+/**
+ * Detect the docs host dynamically based on the current hostname.
+ * files.dev.mother-tree.org -> docs.dev.mother-tree.org
+ * files.prod.mother-tree.org -> docs.prod.mother-tree.org
+ */
+function getDocsHost() {
+	const hostname = window.location.hostname;
+	if (hostname.startsWith('files.')) {
+		return hostname.replace(/^files\./, 'docs.');
+	}
+	// Fallback to build-time value if hostname doesn't match expected pattern
+	return getDocsHost() || null;
+}
+
 // Mokey-patch OC.dialogs, since somebody misspelled Dialogs.OK_BUTTON/S/...
 window.OC.dialogs.alert = function (title, message) {
 	window.OC.dialogs.message(
@@ -45,7 +59,7 @@ export class LinkeditorServiceNext {
 			displayName: () => t("files_linkeditor", "View link"),
 			iconSvgInline: getSpanWithIconClass,
 			exec: async (file) => {
-				const docsHost = import.meta.env.VITE_DOCS_HOST;
+				const docsHost = getDocsHost();
 				
 				if (window.OC.currentUser) {
 					// For La Suite docs, open window FIRST (synchronously) to avoid popup blocker
@@ -161,7 +175,7 @@ export class LinkeditorServiceNext {
 		});
 
 		// La Suite Docs integration - only show if DOCS_HOST was provided at build time
-		const docsHost = import.meta.env.VITE_DOCS_HOST;
+		const docsHost = getDocsHost();
 		if (docsHost) {
 			const docsBaseUrl = `https://${docsHost}`;
 			addNewFileMenuEntry({
@@ -266,7 +280,7 @@ export class LinkeditorServiceNext {
 			}
 			
 			// Auto-skip confirmation for La Suite docs URLs (open in new window)
-			const docsHost = import.meta.env.VITE_DOCS_HOST;
+			const docsHost = getDocsHost();
 			if (docsHost && parsedFile.url && parsedFile.url.includes(docsHost)) {
 				parsedFile.skipConfirmation = true;
 				parsedFile.sameWindow = false;

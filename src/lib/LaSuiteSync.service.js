@@ -6,7 +6,21 @@
  * - Older files: sync every 60 seconds
  */
 
-const DOCS_HOST = import.meta.env.VITE_DOCS_HOST;
+/**
+ * Detect the docs host dynamically based on the current hostname.
+ * files.dev.mother-tree.org -> docs.dev.mother-tree.org
+ * files.prod.mother-tree.org -> docs.prod.mother-tree.org
+ */
+function getDocsHost() {
+	const hostname = window.location.hostname;
+	if (hostname.startsWith('files.')) {
+		return hostname.replace(/^files\./, 'docs.');
+	}
+	// Fallback to build-time value if hostname doesn't match expected pattern
+	return import.meta.env.VITE_DOCS_HOST || null;
+}
+
+const DOCS_HOST = getDocsHost();
 const DOCS_URL_PATTERN = DOCS_HOST ? new RegExp(`https://${DOCS_HOST.replace(/\./g, '\\.')}/docs/([a-f0-9-]+)/?`, 'i') : null;
 
 /**
