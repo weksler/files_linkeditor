@@ -45,6 +45,11 @@ return [
 			'name' => 'Token#renameFile',
 			'url' => '/api/rename-file',
 			'verb' => 'POST'
+		],
+		[
+			'name' => 'Token#convertDocx',
+			'url' => '/api/convert-docx',
+			'verb' => 'POST'
 		]
 	]
 ];

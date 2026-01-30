@@ -255,6 +255,66 @@ export class LinkeditorServiceNext {
 					}
 				},
 			});
+
+			// File action to convert DOCX files to La Suite Docs (MTD) format
+			const docxMimeType = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+			registerFileAction({
+				id: "convertDocxToMtd",
+				displayName: () => window.t("files_linkeditor", "Convert to MotherTree Docs"),
+				iconSvgInline: () => '<span class="icon-file" style="display: block;"></span>',
+				exec: async (file) => {
+					// Build the file path relative to user root
+					const filePath = file.dirname ? `${file.dirname}/${file.basename}` : file.basename;
+					
+					try {
+						window.OC.Notification.showTemporary(
+							window.t("files_linkeditor", "Converting document..."),
+							{ timeout: 3 }
+						);
+						
+						const response = await fetch(
+							window.OC.generateUrl("/apps/files_linkeditor/api/convert-docx"),
+							{
+								method: "POST",
+								headers: {
+									"requesttoken": window.OC.requestToken,
+									"Content-Type": "application/json",
+								},
+								body: JSON.stringify({ filePath }),
+							}
+						);
+						
+						if (!response.ok) {
+							const error = await response.json();
+							console.error("[LaSuite] Failed to queue DOCX conversion:", error);
+							window.OC.Notification.showTemporary(
+								error.message || window.t("files_linkeditor", "Failed to convert document."),
+								{ type: "error" }
+							);
+							return;
+						}
+						
+						const result = await response.json();
+						console.log("[LaSuite] DOCX conversion queued:", result);
+						window.OC.Notification.showTemporary(
+							window.t("files_linkeditor", "Document conversion queued. You will be notified when complete."),
+							{ timeout: 5 }
+						);
+						
+					} catch (error) {
+						console.error("[LaSuite] Error converting document:", error);
+						window.OC.Notification.showTemporary(
+							window.t("files_linkeditor", "An error occurred while converting the document."),
+							{ type: "error" }
+						);
+					}
+				},
+				enabled: (files) =>
+					window.OC.currentUser &&
+					files.length === 1 &&
+					files.every((file) => file.mime === docxMimeType),
+				order: 100, // Show after other actions
+			});
 		}
 	}
 

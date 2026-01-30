@@ -22,9 +22,11 @@
 
 namespace OCA\Files_Linkeditor\Controller;
 
+use OCA\Files_Linkeditor\BackgroundJob\DocxConversionJob;
 use OCP\AppFramework\Controller;
 use OCP\AppFramework\Http;
 use OCP\AppFramework\Http\JSONResponse;
+use OCP\BackgroundJob\IJobList;
 use OCP\EventDispatcher\IEventDispatcher;
 use OCP\Files\IRootFolder;
 use OCP\Http\Client\IClientService;
@@ -53,6 +55,9 @@ class TokenController extends Controller {
 	/** @var IUserSession */
 	private $userSession;
 
+	/** @var IJobList */
+	private $jobList;
+
 	/**
 	 * @param string $AppName
 	 * @param IRequest $request
@@ -62,6 +67,7 @@ class TokenController extends Controller {
 	 * @param IConfig $config
 	 * @param IRootFolder $rootFolder
 	 * @param IUserSession $userSession
+	 * @param IJobList $jobList
 	 */
 	public function __construct(
 		$AppName,
@@ -71,7 +77,8 @@ class TokenController extends Controller {
 		IClientService $httpClientService,
 		IConfig $config,
 		IRootFolder $rootFolder,
-		IUserSession $userSession
+		IUserSession $userSession,
+		IJobList $jobList
 	) {
 		parent::__construct($AppName, $request);
 		$this->eventDispatcher = $eventDispatcher;
@@ -80,6 +87,7 @@ class TokenController extends Controller {
 		$this->config = $config;
 		$this->rootFolder = $rootFolder;
 		$this->userSession = $userSession;
+		$this->jobList = $jobList;
 	}
 
 	/**
@@ -319,6 +327,84 @@ class TokenController extends Controller {
 			);
 		} catch (\Exception $e) {
 			$this->logger->error('Error renaming file: ' . $e->getMessage());
+			return new JSONResponse(
+				['error' => 'internal_error', 'message' => $e->getMessage()],
+				Http::STATUS_INTERNAL_SERVER_ERROR
+			);
+		}
+	}
+
+	/**
+	 * Queue a DOCX file for conversion to La Suite Docs (MTD) format.
+	 *
+	 * This endpoint queues a background job to:
+	 * 1. Convert DOCX to markdown using Pandoc
+	 * 2. Extract and upload images to Nextcloud
+	 * 3. Create a document in La Suite Docs
+	 * 4. Create an .mtd file pointing to the document
+	 *
+	 * @NoAdminRequired
+	 *
+	 * @param string $filePath Path to the DOCX file (relative to user root)
+	 * @return JSONResponse
+	 */
+	public function convertDocx(string $filePath): JSONResponse {
+		try {
+			$user = $this->userSession->getUser();
+			if ($user === null) {
+				return new JSONResponse(
+					['error' => 'not_authenticated', 'message' => 'User not authenticated'],
+					Http::STATUS_UNAUTHORIZED
+				);
+			}
+
+			// Validate that La Suite Docs is configured
+			$docsUrl = $this->config->getAppValue('files_linkeditor', 'docs_url', '');
+			if (empty($docsUrl)) {
+				return new JSONResponse(
+					['error' => 'not_configured', 'message' => 'La Suite Docs URL not configured'],
+					Http::STATUS_SERVICE_UNAVAILABLE
+				);
+			}
+
+			// Validate file exists and is a DOCX
+			$userId = $user->getUID();
+			$userFolder = $this->rootFolder->getUserFolder($userId);
+			
+			try {
+				$file = $userFolder->get($filePath);
+			} catch (\OCP\Files\NotFoundException $e) {
+				return new JSONResponse(
+					['error' => 'file_not_found', 'message' => 'File not found: ' . $filePath],
+					Http::STATUS_NOT_FOUND
+				);
+			}
+
+			$mimeType = $file->getMimeType();
+			$expectedMime = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+			if ($mimeType !== $expectedMime) {
+				return new JSONResponse(
+					['error' => 'invalid_file_type', 'message' => "File is not a DOCX document (got {$mimeType})"],
+					Http::STATUS_BAD_REQUEST
+				);
+			}
+
+			// Queue the conversion job
+			$this->jobList->add(DocxConversionJob::class, [
+				'filePath' => $filePath,
+				'userId' => $userId,
+			]);
+
+			$this->logger->info("Queued DOCX conversion for {$filePath} (user: {$userId})");
+
+			return new JSONResponse([
+				'status' => 'queued',
+				'message' => 'Conversion has been queued. You will be notified when complete.',
+				'filePath' => $filePath,
+			], Http::STATUS_ACCEPTED);
+
+		} catch (\Exception $e) {
+			$this->logger->error('Error queuing DOCX conversion: ' . $e->getMessage());
 			return new JSONResponse(
 				['error' => 'internal_error', 'message' => $e->getMessage()],
 				Http::STATUS_INTERNAL_SERVER_ERROR
