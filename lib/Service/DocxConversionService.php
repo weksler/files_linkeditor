@@ -63,9 +63,10 @@ class DocxConversionService {
 	 *
 	 * @param string $filePath Path to the DOCX file relative to user's root
 	 * @param string $userId User ID
+	 * @param string|null $accessToken Pre-fetched OIDC access token (optional, will be fetched if not provided)
 	 * @return array Result with 'success', 'mtdPath', 'documentUrl', 'error' keys
 	 */
-	public function convertDocxToMtd(string $filePath, string $userId): array {
+	public function convertDocxToMtd(string $filePath, string $userId, ?string $accessToken = null): array {
 		$this->logger->info("Starting DOCX conversion for user {$userId}: {$filePath}");
 
 		try {
@@ -120,8 +121,9 @@ class DocxConversionService {
 			}
 
 			// Create document in La Suite Docs
-			$accessToken = $this->getOidcToken();
-			$documentData = $this->createDocsDocument($baseName, $markdown, $accessToken);
+			// Use provided token or fetch from session
+			$token = $accessToken ?? $this->getOidcToken();
+			$documentData = $this->createDocsDocument($baseName, $markdown, $token);
 
 			// Create .mtd file
 			$mtdFileName = $baseName . '.mtd';
@@ -346,6 +348,9 @@ class DocxConversionService {
 
 	/**
 	 * Create a document in La Suite Docs via API.
+	 *
+	 * Converts markdown to Y.js format using the Y-Provider service,
+	 * then creates the document with the converted content.
 	 */
 	private function createDocsDocument(string $title, string $content, string $accessToken): array {
 		$docsUrl = $this->config->getAppValue('files_linkeditor', 'docs_url', '');
@@ -353,29 +358,98 @@ class DocxConversionService {
 			throw new \RuntimeException('La Suite Docs URL not configured');
 		}
 
-		$client = $this->httpClientService->newClient();
-		$apiUrl = rtrim($docsUrl, '/') . '/api/v1.0/documents/';
-
-		$response = $client->post($apiUrl, [
-			'headers' => [
-				'Authorization' => 'Bearer ' . $accessToken,
-				'Content-Type' => 'application/json',
-			],
-			'body' => json_encode([
-				'title' => $title,
-				'content' => $content,
-			]),
-			'timeout' => 60,
-		]);
-
-		$statusCode = $response->getStatusCode();
-		if ($statusCode !== 201 && $statusCode !== 200) {
-			throw new \RuntimeException("Failed to create document in La Suite Docs (status {$statusCode})");
+		// Get Y-Provider configuration
+		$yProviderUrl = $this->config->getAppValue('files_linkeditor', 'yprovider_url', '');
+		$yProviderKey = $this->config->getAppValue('files_linkeditor', 'yprovider_api_key', '');
+		
+		if (empty($yProviderUrl) || empty($yProviderKey)) {
+			throw new \RuntimeException('Y-Provider URL or API key not configured');
 		}
 
-		$data = json_decode($response->getBody(), true);
+		$this->logger->warning("DOCX conversion: Converting markdown to Y.js", [
+			'title' => $title,
+			'contentLength' => strlen($content),
+		]);
+
+		// Step 1: Convert markdown to Y.js using Y-Provider
+		$convertUrl = rtrim($yProviderUrl, '/') . '/convert/';
+		
+		$ch = curl_init();
+		curl_setopt_array($ch, [
+			CURLOPT_URL => $convertUrl,
+			CURLOPT_POST => true,
+			CURLOPT_POSTFIELDS => $content,
+			CURLOPT_RETURNTRANSFER => true,
+			CURLOPT_HTTPHEADER => [
+				'Authorization: Bearer ' . $yProviderKey,
+				'Content-Type: text/markdown',
+				'Accept: application/vnd.yjs.doc',
+			],
+			CURLOPT_TIMEOUT => 60,
+		]);
+		
+		$yjsContent = curl_exec($ch);
+		$convertStatus = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+		$convertError = curl_error($ch);
+		curl_close($ch);
+		
+		if ($convertError) {
+			throw new \RuntimeException("Y-Provider conversion error: {$convertError}");
+		}
+		
+		if ($convertStatus !== 200) {
+			throw new \RuntimeException("Y-Provider conversion failed (status {$convertStatus}): " . substr($yjsContent, 0, 200));
+		}
+
+		// Base64-encode the Y.js binary content
+		$base64Content = base64_encode($yjsContent);
+
+		$this->logger->warning("DOCX conversion: Creating document in La Suite Docs", [
+			'title' => $title,
+			'yjsContentLength' => strlen($yjsContent),
+			'base64Length' => strlen($base64Content),
+		]);
+
+		// Step 2: Create document with Y.js content
+		$apiUrl = rtrim($docsUrl, '/') . '/api/v1.0/documents/';
+		
+		$ch = curl_init();
+		curl_setopt_array($ch, [
+			CURLOPT_URL => $apiUrl,
+			CURLOPT_POST => true,
+			CURLOPT_POSTFIELDS => json_encode([
+				'title' => $title,
+				'content' => $base64Content,
+			]),
+			CURLOPT_RETURNTRANSFER => true,
+			CURLOPT_HTTPHEADER => [
+				'Authorization: Bearer ' . $accessToken,
+				'Content-Type: application/json',
+			],
+			CURLOPT_TIMEOUT => 60,
+		]);
+		
+		$responseBody = curl_exec($ch);
+		$statusCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+		$curlError = curl_error($ch);
+		curl_close($ch);
+		
+		if ($curlError) {
+			throw new \RuntimeException("Curl error: {$curlError}");
+		}
+
+		$this->logger->warning("DOCX conversion: La Suite Docs response", [
+			'statusCode' => $statusCode,
+			'responseBody' => substr($responseBody, 0, 500),
+		]);
+
+		if ($statusCode !== 201 && $statusCode !== 200) {
+			throw new \RuntimeException("Failed to create document in La Suite Docs (status {$statusCode}): {$responseBody}");
+		}
+
+		$data = json_decode($responseBody, true);
 		if (!isset($data['id'])) {
-			throw new \RuntimeException('Invalid response from La Suite Docs API: missing document ID');
+			throw new \RuntimeException('Invalid response from La Suite Docs API: missing document ID. Response: ' . substr($responseBody, 0, 200));
 		}
 
 		return [

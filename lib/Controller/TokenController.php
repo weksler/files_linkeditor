@@ -22,17 +22,17 @@
 
 namespace OCA\Files_Linkeditor\Controller;
 
-use OCA\Files_Linkeditor\BackgroundJob\DocxConversionJob;
+use OCA\Files_Linkeditor\Service\DocxConversionService;
 use OCP\AppFramework\Controller;
 use OCP\AppFramework\Http;
 use OCP\AppFramework\Http\JSONResponse;
-use OCP\BackgroundJob\IJobList;
 use OCP\EventDispatcher\IEventDispatcher;
 use OCP\Files\IRootFolder;
 use OCP\Http\Client\IClientService;
 use OCP\IConfig;
 use OCP\IRequest;
 use OCP\IUserSession;
+use OCP\Notification\IManager as INotificationManager;
 use Psr\Log\LoggerInterface;
 
 class TokenController extends Controller {
@@ -55,8 +55,11 @@ class TokenController extends Controller {
 	/** @var IUserSession */
 	private $userSession;
 
-	/** @var IJobList */
-	private $jobList;
+	/** @var DocxConversionService */
+	private $conversionService;
+
+	/** @var INotificationManager */
+	private $notificationManager;
 
 	/**
 	 * @param string $AppName
@@ -67,7 +70,8 @@ class TokenController extends Controller {
 	 * @param IConfig $config
 	 * @param IRootFolder $rootFolder
 	 * @param IUserSession $userSession
-	 * @param IJobList $jobList
+	 * @param DocxConversionService $conversionService
+	 * @param INotificationManager $notificationManager
 	 */
 	public function __construct(
 		$AppName,
@@ -78,7 +82,8 @@ class TokenController extends Controller {
 		IConfig $config,
 		IRootFolder $rootFolder,
 		IUserSession $userSession,
-		IJobList $jobList
+		DocxConversionService $conversionService,
+		INotificationManager $notificationManager
 	) {
 		parent::__construct($AppName, $request);
 		$this->eventDispatcher = $eventDispatcher;
@@ -87,7 +92,8 @@ class TokenController extends Controller {
 		$this->config = $config;
 		$this->rootFolder = $rootFolder;
 		$this->userSession = $userSession;
-		$this->jobList = $jobList;
+		$this->conversionService = $conversionService;
+		$this->notificationManager = $notificationManager;
 	}
 
 	/**
@@ -335,13 +341,13 @@ class TokenController extends Controller {
 	}
 
 	/**
-	 * Queue a DOCX file for conversion to La Suite Docs (MTD) format.
+	 * Convert a DOCX file to La Suite Docs (MTD) format.
 	 *
-	 * This endpoint queues a background job to:
-	 * 1. Convert DOCX to markdown using Pandoc
-	 * 2. Extract and upload images to Nextcloud
-	 * 3. Create a document in La Suite Docs
-	 * 4. Create an .mtd file pointing to the document
+	 * This endpoint performs conversion synchronously but returns early to avoid blocking the UI:
+	 * 1. Validates file and gets OIDC token (while user is authenticated)
+	 * 2. Sends immediate response to client
+	 * 3. Continues conversion in background (same PHP process)
+	 * 4. Creates notification when complete
 	 *
 	 * @NoAdminRequired
 	 *
@@ -389,26 +395,104 @@ class TokenController extends Controller {
 				);
 			}
 
-			// Queue the conversion job
-			$this->jobList->add(DocxConversionJob::class, [
+			// Get OIDC token NOW while user is authenticated
+			// This must happen before we send the response
+			if (!class_exists(\OCA\UserOIDC\Event\ExternalTokenRequestedEvent::class)) {
+				return new JSONResponse(
+					['error' => 'oidc_not_available', 'message' => 'OIDC authentication not available'],
+					Http::STATUS_SERVICE_UNAVAILABLE
+				);
+			}
+
+			$event = new \OCA\UserOIDC\Event\ExternalTokenRequestedEvent();
+			$this->eventDispatcher->dispatchTyped($event);
+			$token = $event->getToken();
+
+			if ($token === null) {
+				return new JSONResponse(
+					['error' => 'no_token', 'message' => 'No OIDC token available. Please log in again.'],
+					Http::STATUS_UNAUTHORIZED
+				);
+			}
+
+			$accessToken = $token->getAccessToken();
+			$this->logger->info("Starting DOCX conversion for {$filePath} (user: {$userId})");
+
+			// Allow script to continue after client disconnects
+			ignore_user_abort(true);
+			set_time_limit(300); // 5 minutes max
+
+			// Send immediate response to client
+			// We bypass Nextcloud's response handling to flush early
+			header('HTTP/1.1 202 Accepted');
+			header('Content-Type: application/json');
+			echo json_encode([
+				'status' => 'converting',
+				'message' => 'Conversion started. You will be notified when complete.',
 				'filePath' => $filePath,
-				'userId' => $userId,
 			]);
 
-			$this->logger->info("Queued DOCX conversion for {$filePath} (user: {$userId})");
+			// Flush output to client
+			if (ob_get_level() > 0) {
+				ob_end_flush();
+			}
+			flush();
 
-			return new JSONResponse([
-				'status' => 'queued',
-				'message' => 'Conversion has been queued. You will be notified when complete.',
-				'filePath' => $filePath,
-			], Http::STATUS_ACCEPTED);
+			// Close session to allow other requests for this user
+			if (session_status() === PHP_SESSION_ACTIVE) {
+				session_write_close();
+			}
+
+			// Now perform the conversion with the pre-fetched token
+			$result = $this->conversionService->convertDocxToMtd($filePath, $userId, $accessToken);
+
+			// Send notification to user
+			$this->sendConversionNotification($userId, $filePath, $result);
+
+			// Exit to prevent Nextcloud from sending another response
+			exit;
 
 		} catch (\Exception $e) {
-			$this->logger->error('Error queuing DOCX conversion: ' . $e->getMessage());
+			$this->logger->error('Error during DOCX conversion: ' . $e->getMessage());
 			return new JSONResponse(
 				['error' => 'internal_error', 'message' => $e->getMessage()],
 				Http::STATUS_INTERNAL_SERVER_ERROR
 			);
+		}
+	}
+
+	/**
+	 * Send a notification to the user about the conversion result.
+	 */
+	private function sendConversionNotification(string $userId, string $filePath, array $result): void {
+		try {
+			$notification = $this->notificationManager->createNotification();
+			$notification
+				->setApp('files_linkeditor')
+				->setUser($userId)
+				->setDateTime(new \DateTime())
+				->setObject('docx_conversion', md5($filePath));
+
+			if ($result['success']) {
+				$fileName = basename($filePath, '.docx');
+				$notification
+					->setSubject('conversion_success', ['file' => $fileName])
+					->setMessage('conversion_success_message', [
+						'file' => $fileName,
+						'mtdFile' => $fileName . '.mtd',
+					]);
+			} else {
+				$notification
+					->setSubject('conversion_failed', ['file' => basename($filePath)])
+					->setMessage('conversion_failed_message', [
+						'file' => basename($filePath),
+						'error' => $result['error'] ?? 'Unknown error',
+					]);
+			}
+
+			$this->notificationManager->notify($notification);
+		} catch (\Exception $e) {
+			$this->logger->warning('Failed to send conversion notification: ' . $e->getMessage());
 		}
 	}
 }
