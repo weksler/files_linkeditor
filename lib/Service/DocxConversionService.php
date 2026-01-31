@@ -110,6 +110,13 @@ class DocxConversionService {
 			}
 			$markdown = file_get_contents($markdownPath);
 
+			// Log the raw markdown for debugging
+			$this->logger->warning("DOCX conversion: Pandoc output", [
+				'markdownLength' => strlen($markdown),
+				'markdownPreview' => substr($markdown, 0, 500),
+				'markdownEnd' => substr($markdown, -500),
+			]);
+
 			// Handle images - upload to Nextcloud and rewrite URLs
 			$parentFolder = $file->getParent();
 			$baseName = pathinfo($file->getName(), PATHINFO_FILENAME);
