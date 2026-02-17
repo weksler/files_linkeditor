@@ -1,9 +1,12 @@
 /**
  * La Suite Docs Title Sync Service
- * 
+ *
  * Periodically syncs La Suite document titles with Nextcloud filenames.
- * - New files (< 10 minutes old): sync every 10 seconds
- * - Older files: sync every 60 seconds
+ * - New files (< 10 minutes old): sync every 30 seconds
+ * - Older files: sync every 5 minutes
+ *
+ * Uses a docId cache to avoid re-fetching file content on every cycle.
+ * Only files that are due for a sync check have their content fetched.
  */
 
 /**
@@ -60,10 +63,15 @@ const fileCreationTimes = new Map();
 // Track last sync time per document to implement different intervals
 const lastSyncTime = new Map();
 
+// Cache docId per file path so we can skip content fetches on subsequent cycles
+const docIdCache = new Map();
+
 // Sync intervals
-const NEW_FILE_INTERVAL = 10 * 1000; // 10 seconds for files < 10 minutes old
-const OLD_FILE_INTERVAL = 60 * 1000; // 60 seconds for older files
+const NEW_FILE_INTERVAL = 30 * 1000; // 30 seconds for files < 10 minutes old
+const OLD_FILE_INTERVAL = 5 * 60 * 1000; // 5 minutes for older files
 const NEW_FILE_THRESHOLD = 10 * 60 * 1000; // 10 minutes
+const BASE_POLL_INTERVAL = 30 * 1000; // 30 seconds between sync cycles
+const FOLDER_CHECK_INTERVAL = 5 * 1000; // 5 seconds between folder change checks
 
 let syncTimerId = null;
 
@@ -229,7 +237,9 @@ async function fetchFileContent(filePath) {
 }
 
 /**
- * Sync document titles with filenames
+ * Sync document titles with filenames.
+ * Uses docIdCache to avoid fetching file content when we already know the docId
+ * and the file isn't due for a sync yet.
  */
 async function syncDocumentTitles() {
 	if (!DOCS_HOST || !window.OC?.currentUser) {
@@ -243,8 +253,26 @@ async function syncDocumentTitles() {
 		const now = Date.now();
 		const documentsToSync = [];
 
-		// Process each file
 		for (const file of files) {
+			// Track creation time
+			if (!fileCreationTimes.has(file.path)) {
+				fileCreationTimes.set(file.path, file.mtime || now);
+			}
+
+			const creationTime = fileCreationTimes.get(file.path);
+			const fileAge = now - creationTime;
+			const interval = fileAge < NEW_FILE_THRESHOLD ? NEW_FILE_INTERVAL : OLD_FILE_INTERVAL;
+
+			// If we already know this file's docId, check interval BEFORE fetching content
+			const cachedDocId = docIdCache.get(file.path);
+			if (cachedDocId) {
+				const lastSync = lastSyncTime.get(cachedDocId) || 0;
+				if (now - lastSync < interval) {
+					continue; // Not due yet, skip entirely (no content fetch)
+				}
+			}
+
+			// Fetch content only for files that need syncing (or are new to us)
 			const content = await fetchFileContent(file.path);
 			if (!content) continue;
 
@@ -254,27 +282,23 @@ async function syncDocumentTitles() {
 			const docId = extractDocId(url);
 			if (!docId) continue;
 
-			// Track creation time
-			if (!fileCreationTimes.has(file.path)) {
-				fileCreationTimes.set(file.path, file.mtime || now);
+			// Cache the docId for future cycles
+			docIdCache.set(file.path, docId);
+
+			// For newly discovered files, also check interval with actual docId
+			if (!cachedDocId) {
+				const lastSync = lastSyncTime.get(docId) || 0;
+				if (now - lastSync < interval) {
+					continue;
+				}
 			}
 
-			const creationTime = fileCreationTimes.get(file.path);
-			const fileAge = now - creationTime;
-			const lastSync = lastSyncTime.get(docId) || 0;
-			const timeSinceLastSync = now - lastSync;
-
-			// Determine if we should sync this file based on its age
-			const interval = fileAge < NEW_FILE_THRESHOLD ? NEW_FILE_INTERVAL : OLD_FILE_INTERVAL;
-			
-			if (timeSinceLastSync >= interval) {
-				documentsToSync.push({
-					id: docId,
-					filePath: file.path,
-					fileName: file.name,
-				});
-				lastSyncTime.set(docId, now);
-			}
+			documentsToSync.push({
+				id: docId,
+				filePath: file.path,
+				fileName: file.name,
+			});
+			lastSyncTime.set(docId, now);
 		}
 
 		if (documentsToSync.length === 0) return;
@@ -315,7 +339,7 @@ async function syncDocumentTitles() {
 			// Check if rename is needed (includes extension change from .url/.webloc to .mtd)
 			if (originalFile.fileName !== expectedName) {
 				console.log(`[LaSuiteSync] Renaming: ${originalFile.fileName} -> ${expectedName}`);
-				
+
 				try {
 					const renameResponse = await fetch(
 						window.OC.generateUrl('/apps/files_linkeditor/api/rename-file'),
@@ -335,6 +359,7 @@ async function syncDocumentTitles() {
 					if (renameResponse.ok) {
 						// Update our tracking
 						fileCreationTimes.delete(originalFile.filePath);
+						docIdCache.delete(originalFile.filePath);
 						renamedFiles.push({
 							oldPath: originalFile.filePath,
 							newPath: newPath,
@@ -370,7 +395,7 @@ async function syncAllImmediately() {
 
 		const documentsToSync = [];
 
-		// Process each file without checking intervals
+		// Process each file without checking intervals (immediate sync)
 		for (const file of files) {
 			const content = await fetchFileContent(file.path);
 			if (!content) continue;
@@ -381,15 +406,18 @@ async function syncAllImmediately() {
 			const docId = extractDocId(url);
 			if (!docId) continue;
 
+			// Populate cache for future cycles
+			docIdCache.set(file.path, docId);
+
 			documentsToSync.push({
 				id: docId,
 				filePath: file.path,
 				fileName: file.name,
 			});
-			
+
 			// Update last sync time
 			lastSyncTime.set(docId, Date.now());
-			
+
 			// Track creation time if not already tracked
 			if (!fileCreationTimes.has(file.path)) {
 				fileCreationTimes.set(file.path, file.mtime || Date.now());
@@ -487,31 +515,33 @@ export function startSync() {
 		return; // Already running
 	}
 
-	// Run sync every 5 seconds (the actual per-file intervals are managed internally)
-	syncTimerId = setInterval(syncDocumentTitles, 5000);
-	
+	// Run sync at the base poll interval (per-file intervals are managed internally)
+	syncTimerId = setInterval(syncDocumentTitles, BASE_POLL_INTERVAL);
+
 	// Also run immediately
 	syncDocumentTitles();
-	
+
 	// Listen for folder changes to trigger immediate sync
 	let lastDir = null;
 	let lastUrl = window.location.href;
-	
+
 	const checkFolderChange = () => {
 		const currentDir = getCurrentDirectory();
 		const currentUrl = window.location.href;
-		
+
 		// Check if URL or directory changed
 		if (currentDir !== lastDir || currentUrl !== lastUrl) {
 			lastDir = currentDir;
 			lastUrl = currentUrl;
+			// Clear docId cache on folder change since file paths are different
+			docIdCache.clear();
 			// Small delay to let the file list populate
 			setTimeout(syncAllImmediately, 500);
 		}
 	};
-	
-	// Check for folder changes every second (watches URL)
-	setInterval(checkFolderChange, 1000);
+
+	// Check for folder changes periodically (watches URL)
+	setInterval(checkFolderChange, FOLDER_CHECK_INTERVAL);
 	
 	// Also listen for popstate (back/forward navigation)
 	window.addEventListener('popstate', () => {
